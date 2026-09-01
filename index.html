@@ -67,11 +67,19 @@
   <div class="ref2d">
     <figure>
       <img id="img2d-rgb" alt="Camera RGB image of the current frame" loading="lazy">
-      <figcaption>Camera RGB (2D reference)</figcaption>
+      <figcaption>Camera RGB (2D)</figcaption>
     </figure>
     <figure>
       <img id="img2d-gt" alt="Ground-truth semantic segmentation of the current frame" loading="lazy">
-      <figcaption>Ground truth (2D reference)</figcaption>
+      <figcaption>Ground truth (2D)</figcaption>
+    </figure>
+    <figure>
+      <canvas id="cv2d-a" width="612" height="512"></canvas>
+      <figcaption id="cap2d-a"></figcaption>
+    </figure>
+    <figure>
+      <canvas id="cv2d-b" width="612" height="512"></canvas>
+      <figcaption id="cap2d-b"></figcaption>
     </figure>
   </div>
 

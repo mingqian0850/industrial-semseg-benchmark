@@ -26,7 +26,7 @@ const state = {
   a: "volt",
   b: "ditr",
   mode: "pred",
-  positions: null, rgb: null, gt: null,
+  positions: null, rgb: null, gt: null, uv: null,
   preds: new Map(),
   loadToken: 0,
 };
@@ -95,10 +95,11 @@ async function fetchBin(sample, file) {
 async function loadFrameData() {
   const f = currentFrame();
   const sample = sampleId();
-  const [coordBuf, rgbBuf, gtBuf] = await Promise.all([
+  const [coordBuf, rgbBuf, gtBuf, uvBuf] = await Promise.all([
     fetchBin(sample, "coord.bin"),
     fetchBin(sample, "rgb.bin"),
     fetchBin(sample, "gt.bin"),
+    fetchBin(sample, "uv.bin"),
   ]);
   const q = new Uint16Array(coordBuf);
   const n = q.length / 3;
@@ -113,6 +114,7 @@ async function loadFrameData() {
   state.positions = pos;
   state.rgb = new Uint8Array(rgbBuf);
   state.gt = new Int8Array(gtBuf);
+  state.uv = new Uint16Array(uvBuf);
   state.preds.clear();
 }
 
@@ -204,6 +206,37 @@ function setViewColors(key, colors) {
   v.points.geometry.attributes.color.needsUpdate = true;
 }
 
+/* ---------- 2D pred / error map (points splatted back to source pixels) ---------- */
+
+const W2D = 612, H2D = 512;
+const PAL2D = [];
+for (let i = -1; i < 23; i++) PAL2D[i + 1] = hashColor(i);
+const ERR2D = { correct: [120, 120, 120], wrong: [229, 57, 53], ignored: [0, 0, 0] };
+
+function render2d(canvas, labels, errMode) {
+  const ctx = canvas.getContext("2d");
+  const img = ctx.createImageData(W2D, H2D);
+  const d = img.data;
+  for (let p = 0; p < W2D * H2D; p++) {
+    d[p * 4] = 15; d[p * 4 + 1] = 23; d[p * 4 + 2] = 42; d[p * 4 + 3] = 255;
+  }
+  const { uv, gt } = state;
+  for (let i = 0; i < labels.length; i++) {
+    const c = errMode
+      ? (gt[i] < 0 ? ERR2D.ignored : gt[i] === labels[i] ? ERR2D.correct : ERR2D.wrong)
+      : PAL2D[labels[i] + 1];
+    const u = uv[i * 2], v = uv[i * 2 + 1];
+    // 3x3 splat: 120k points cover ~40% of pixels, this fills most gaps
+    for (let y = Math.max(v - 1, 0); y <= Math.min(v + 1, H2D - 1); y++) {
+      for (let x = Math.max(u - 1, 0); x <= Math.min(u + 1, W2D - 1); x++) {
+        const o = (y * W2D + x) * 4;
+        d[o] = c[0]; d[o + 1] = c[1]; d[o + 2] = c[2];
+      }
+    }
+  }
+  ctx.putImageData(img, 0, 0);
+}
+
 /* ---------- UI ---------- */
 
 function chip(rgb, label) {
@@ -231,9 +264,14 @@ async function updateModelViews() {
   const make = (p) => (state.mode === "err" ? errorColors(state.gt, p) : semanticColors(p));
   setViewColors("a", make(pa));
   setViewColors("b", make(pb));
-  const suffix = state.mode === "err" ? "error map" : "prediction";
+  const err = state.mode === "err";
+  const suffix = err ? "error map" : "prediction";
   $("#label-a").textContent = `${MODELS[state.a]} — ${suffix}`;
   $("#label-b").textContent = `${MODELS[state.b]} — ${suffix}`;
+  render2d($("#cv2d-a"), pa, err);
+  render2d($("#cv2d-b"), pb, err);
+  $("#cap2d-a").textContent = `${MODELS[state.a]} — ${suffix} (2D)`;
+  $("#cap2d-b").textContent = `${MODELS[state.b]} — ${suffix} (2D)`;
   renderLegend();
 }
 

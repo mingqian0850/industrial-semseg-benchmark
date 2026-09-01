@@ -156,15 +156,17 @@ a:hover { text-decoration: underline; }
   .views { grid-template-columns: repeat(2, 1fr); }
 }
 
-/* static 2D reference images of the current frame */
+/* 2D reference row: RGB / GT images + model pred/error canvases,
+   aligned with the four 3D views above */
 .ref2d {
-  display: flex;
-  justify-content: center;
+  display: grid;
+  grid-template-columns: repeat(4, 1fr);
   gap: 12px;
   margin-top: 16px;
 }
-.ref2d figure { margin: 0; max-width: 340px; flex: 0 1 340px; }
-.ref2d img {
+.ref2d figure { margin: 0; }
+.ref2d img,
+.ref2d canvas {
   display: block;
   width: 100%;
   aspect-ratio: 612 / 512;
@@ -179,6 +181,10 @@ a:hover { text-decoration: underline; }
   font-weight: 600;
   color: var(--ink-2);
   padding-top: 6px;
+}
+
+@media (max-width: 900px) {
+  .ref2d { grid-template-columns: repeat(2, 1fr); }
 }
 
 /* legend */
