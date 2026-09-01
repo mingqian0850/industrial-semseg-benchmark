@@ -15,7 +15,7 @@ const COLORS = {
   sonatalin: "#a8a29e",
 };
 
-const state = { meta: null, lb: null, noise: null, cross: null, eff: null };
+const state = { meta: null, lb: null, noise: null, cross: null, eff: null, compare: null };
 
 const $ = (sel) => document.querySelector(sel);
 const fmt = (x, d = 3) => (x == null ? "–" : x.toFixed(d));
@@ -178,23 +178,111 @@ function renderCrossRobot(metric = "miou17") {
     .join("");
 }
 
-const QUAL_PANELS = [
-  ["input_point_cloud", "Input point cloud"],
-  ["ground_truth_semantic", "Ground truth"],
-  ["volt_prediction_semantic", "VoLT — prediction"],
-  ["volt_robot_error", "VoLT — error map"],
-  ["ditr_prediction_semantic", "DiTR — prediction"],
-  ["ditr_robot_error", "DiTR — error map"],
-  ["oacnn_prediction_semantic", "OA-CNN — prediction"],
-  ["oacnn_robot_error", "OA-CNN — error map"],
-];
+/* ---------- interactive prediction explorer ---------- */
 
-function renderQualitative(view = "full_view") {
-  $("#qual-grid").innerHTML = QUAL_PANELS
-    .map(([f, cap]) =>
-      `<figure class="fig"><img src="${HF}/media/qualitative_kuka/${view}/${f}.webp" loading="lazy" alt="${cap}"><figcaption><b>${cap}</b></figcaption></figure>`)
+const explore = { frame: null, a: "volt", b: "ditr", mode: "pred" };
+
+function frameURL(frameId, file) {
+  return `${HF}/media/compare/${frameId}/${file}`;
+}
+
+function renderFrameList() {
+  const groups = {};
+  state.compare.frames.forEach((f) => (groups[f.group] ??= []).push(f));
+  $("#frame-list").innerHTML = Object.entries(groups)
+    .map(([g, frames]) => `
+      <div class="frame-group">${g}</div>
+      ${frames.map((f) => `
+        <button class="frame-item ${f.id === explore.frame ? "active" : ""}" data-frame="${f.id}" type="button">
+          <img src="${frameURL(f.id, "thumb.webp")}" loading="lazy" alt="">
+          <span>${f.label}</span>
+        </button>`).join("")}`)
     .join("");
-  $("#legend-img").src = `${HF}/media/qualitative_kuka/semantic_legend.png`;
+}
+
+function renderModelSelects() {
+  const opts = (sel) => Object.entries(state.meta.models)
+    .map(([k, name]) => `<option value="${k}" ${k === explore[sel] ? "selected" : ""}>${name}</option>`)
+    .join("");
+  $("#model-a").innerHTML = opts("a");
+  $("#model-b").innerHTML = opts("b");
+}
+
+function renderPanels() {
+  const f = explore.frame;
+  const suffix = explore.mode;
+  const panels = [
+    ["rgb.webp", "RGB input"],
+    ["gt.webp", "Ground truth"],
+    [`${explore.a}_${suffix}.webp`, `${modelName(explore.a)} — ${suffix === "pred" ? "prediction" : "error map"}`],
+    [`${explore.b}_${suffix}.webp`, `${modelName(explore.b)} — ${suffix === "pred" ? "prediction" : "error map"}`],
+  ];
+  $("#panel-grid").innerHTML = panels
+    .map(([file, cap]) =>
+      `<figure class="fig"><img src="${frameURL(f, file)}" alt="${cap}"><figcaption><b>${cap}</b></figcaption></figure>`)
+    .join("");
+  renderExploreLegend();
+}
+
+function chip(rgb, label) {
+  return `<span class="chip"><i style="background:rgb(${rgb.join(",")})"></i>${label}</span>`;
+}
+
+function renderExploreLegend() {
+  const m = state.compare;
+  if (explore.mode === "err") {
+    $("#explore-legend").innerHTML =
+      chip(m.error_palette.correct, "correct") +
+      chip(m.error_palette.wrong, "misclassified") +
+      chip(m.error_palette.ignored, "ignored");
+    return;
+  }
+  const f = m.frames.find((x) => x.id === explore.frame);
+  $("#explore-legend").innerHTML = f.classes_present
+    .map((c) => chip(m.class_palette[c], c.replaceAll("_", " ")))
+    .join("");
+}
+
+function setFrame(id) {
+  explore.frame = id;
+  document.querySelectorAll(".frame-item").forEach((el) =>
+    el.classList.toggle("active", el.dataset.frame === id));
+  renderPanels();
+}
+
+function feelingLucky() {
+  const frames = state.compare.frames;
+  const models = Object.keys(state.meta.models);
+  explore.frame = frames[Math.floor(Math.random() * frames.length)].id;
+  const a = models[Math.floor(Math.random() * models.length)];
+  let b = a;
+  while (b === a) b = models[Math.floor(Math.random() * models.length)];
+  explore.a = a;
+  explore.b = b;
+  renderModelSelects();
+  setFrame(explore.frame);
+}
+
+function setupExplore() {
+  explore.frame = state.compare.frames[0].id;
+  renderFrameList();
+  renderModelSelects();
+  renderPanels();
+
+  $("#frame-list").addEventListener("click", (ev) => {
+    const item = ev.target.closest(".frame-item");
+    if (item) setFrame(item.dataset.frame);
+  });
+  $("#model-a").addEventListener("change", (ev) => { explore.a = ev.target.value; renderPanels(); });
+  $("#model-b").addEventListener("change", (ev) => { explore.b = ev.target.value; renderPanels(); });
+  $("#ex-mode").addEventListener("click", (ev) => {
+    const btn = ev.target.closest("button");
+    if (!btn) return;
+    document.querySelectorAll("#ex-mode button").forEach((b) => b.classList.toggle("active", b === btn));
+    explore.mode = btn.dataset.mode;
+    renderPanels();
+  });
+  $("#lucky").addEventListener("click", feelingLucky);
 }
 
 /* ---------- efficiency ---------- */
@@ -287,18 +375,19 @@ function setupLightbox() {
 /* ---------- boot ---------- */
 
 async function main() {
-  [state.meta, state.lb, state.noise, state.cross, state.eff] = await Promise.all([
+  [state.meta, state.lb, state.noise, state.cross, state.eff, state.compare] = await Promise.all([
     fetchJSON("metrics/meta.json"),
     fetchJSON("metrics/leaderboard_clean.json"),
     fetchJSON("metrics/noise_robustness.json"),
     fetchJSON("metrics/cross_robot.json"),
     fetchJSON("metrics/efficiency.json"),
+    fetchJSON("metrics/compare_manifest.json"),
   ]);
   renderLeaderboard();
   renderNoiseCharts();
   renderNoiseGallery();
   renderCrossRobot();
-  renderQualitative();
+  setupExplore();
   renderEfficiency();
   renderDatasetGalleries();
   setupLightbox();
@@ -308,12 +397,6 @@ async function main() {
     if (!btn) return;
     document.querySelectorAll("#cr-metric button").forEach((b) => b.classList.toggle("active", b === btn));
     renderCrossRobot(btn.dataset.metric);
-  });
-  $("#q-view").addEventListener("click", (ev) => {
-    const btn = ev.target.closest("button");
-    if (!btn) return;
-    document.querySelectorAll("#q-view button").forEach((b) => b.classList.toggle("active", b === btn));
-    renderQualitative(btn.dataset.view);
   });
 }
 
