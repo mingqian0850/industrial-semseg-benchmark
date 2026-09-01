@@ -234,10 +234,17 @@ async function updateModelViews() {
   renderLegend();
 }
 
+function updateRef2d() {
+  const sample = sampleId();
+  $("#img2d-rgb").src = `${HF}/media/pc/${sample}/rgb2d.webp`;
+  $("#img2d-gt").src = `${HF}/media/pc/${sample}/gt2d.webp`;
+}
+
 async function showFrame() {
   const token = ++state.loadToken;
   $("#loading").style.display = "flex";
   $("#sel-frame").value = String(state.frameIdx);
+  updateRef2d();
   try {
     await loadFrameData();
     if (token !== state.loadToken) return;
