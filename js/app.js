@@ -27,6 +27,7 @@ const state = {
   b: "ditr",
   mode: "pred",
   positions: null, rgb: null, gt: null, uv: null,
+  preds: null,     // Map model -> Int8Array, filled from the frame pack
   loadToken: 0,
 };
 
@@ -83,31 +84,42 @@ function rgbColors(rgb) {
   return out;
 }
 
-/* ---------- data loading ---------- */
+/* ---------- data loading ----------
+ * One gzip pack per frame holds coord/rgb/gt/uv plus the predictions of ALL
+ * models (labels compress to ~7 KB each), so switching models needs no fetch.
+ * Layout (little-endian, n points): coord u16*3 | rgb u8*3 | gt i8 | uv u16*2
+ * | one i8 array per model in manifest.models order. */
 
-async function fetchBin(sample, file, retry = 1) {
+async function fetchPack(sample, retry = 1) {
   try {
-    const r = await fetch(`${HF}/media/pc/${sample}/${file}`);
-    if (!r.ok) throw new Error(`${file}: HTTP ${r.status}`);
-    return await r.arrayBuffer();
+    const r = await fetch(`${HF}/media/pc/${sample}/frame.bin.gz`);
+    if (!r.ok) throw new Error(`${sample}: HTTP ${r.status}`);
+    const ds = new DecompressionStream("gzip");
+    return await new Response(r.body.pipeThrough(ds)).arrayBuffer();
   } catch (e) {
     if (retry <= 0) throw e;
     await new Promise((res) => setTimeout(res, 800));
-    return fetchBin(sample, file, retry - 1);
+    return fetchPack(sample, retry - 1);
   }
+}
+
+/* Small LRU of decompressed packs; also used to prefetch the next frame. */
+const packCache = new Map();
+
+function getPack(sample) {
+  if (!packCache.has(sample)) {
+    if (packCache.size >= 8) packCache.delete(packCache.keys().next().value);
+    const p = fetchPack(sample).catch((e) => { packCache.delete(sample); throw e; });
+    packCache.set(sample, p);
+  }
+  return packCache.get(sample);
 }
 
 async function loadFrameData() {
   const f = currentFrame();
-  const sample = sampleId();
-  const [coordBuf, rgbBuf, gtBuf, uvBuf] = await Promise.all([
-    fetchBin(sample, "coord.bin"),
-    fetchBin(sample, "rgb.bin"),
-    fetchBin(sample, "gt.bin"),
-    fetchBin(sample, "uv.bin"),
-  ]);
-  const q = new Uint16Array(coordBuf);
-  const n = q.length / 3;
+  const buf = await getPack(sampleId());
+  const n = f.n;
+  const q = new Uint16Array(buf, 0, n * 3);
   const pos = new Float32Array(n * 3);
   const [mnx, mny, mnz, mxx, mxy, mxz] = f.b;
   const sx = (mxx - mnx) / 65535, sy = (mxy - mny) / 65535, sz = (mxz - mnz) / 65535;
@@ -117,32 +129,22 @@ async function loadFrameData() {
     pos[i * 3 + 2] = mnz + q[i * 3 + 2] * sz;
   }
   state.positions = pos;
-  state.rgb = new Uint8Array(rgbBuf);
-  state.gt = new Int8Array(gtBuf);
-  state.uv = new Uint16Array(uvBuf);
+  state.rgb = new Uint8Array(buf, n * 6, n * 3);
+  state.gt = new Int8Array(buf, n * 9, n);
+  state.uv = new Uint16Array(buf, n * 10, n * 2);
+  state.preds = new Map(
+    state.manifest.models.map((m, i) => [m, new Int8Array(buf, n * 14 + i * n, n)]));
 }
 
-/* Cache keyed by sample AND model so a slow response for a previous frame can
- * never be mistaken for the current one; caching the promise dedupes inflight
- * requests. Cleared wholesale once it grows past ~7 MB. */
-const predCache = new Map();
-
-function loadPred(model) {
-  const sample = sampleId();
-  const key = `${sample}/${model}`;
-  if (!predCache.has(key)) {
-    if (predCache.size > 60) predCache.clear();
-    const p = fetchBin(sample, `${model}.bin`)
-      .then((buf) => new Int8Array(buf))
-      .catch((e) => { predCache.delete(key); throw e; });
-    predCache.set(key, p);
-  }
-  return predCache.get(key);
+function prefetchNextFrame() {
+  const frames = state.split.frames;
+  const next = frames[(state.frameIdx + 1) % frames.length];
+  getPack(`${state.split.dataset}__${next.f}`).catch(() => {});
 }
 
 /* ---------- three.js four-view rig ---------- */
 
-const rig = { renderer: null, camera: null, controls: null, views: [] };
+const rig = { renderer: null, camera: null, controls: null, views: [], needsRender: true, lastSplit: null };
 
 function setupViews() {
   const container = $("#views");
@@ -169,12 +171,16 @@ function setupViews() {
   const resize = () => {
     const r = container.getBoundingClientRect();
     rig.renderer.setSize(r.width, r.height);
+    rig.needsRender = true;
   };
   new ResizeObserver(resize).observe(container);
   resize();
 
+  // Render only when the camera moved or data changed; an idle page costs no GPU.
   rig.renderer.setAnimationLoop(() => {
-    rig.controls.update();
+    const moved = rig.controls.update();
+    if (!moved && !rig.needsRender) return;
+    rig.needsRender = false;
     const crect = container.getBoundingClientRect();
     rig.renderer.setScissorTest(false);
     rig.renderer.setClearColor(0x000000, 0);
@@ -194,57 +200,63 @@ function setupViews() {
 }
 
 function setGeometry() {
-  const geo = new THREE.BufferGeometry();
-  geo.setAttribute("position", new THREE.BufferAttribute(state.positions, 3));
-  const mat = () => new THREE.PointsMaterial({ size: 0.014, vertexColors: true, sizeAttenuation: true });
+  // One position attribute shared by all four views (one GPU buffer).
+  const posAttr = new THREE.BufferAttribute(state.positions, 3);
   for (const v of rig.views) {
     if (v.points) {
       v.scene.remove(v.points);
       v.points.geometry.dispose();
       v.points.material.dispose();
     }
-    const g = geo.clone();
-    v.points = new THREE.Points(g, mat());
+    const g = new THREE.BufferGeometry();
+    g.setAttribute("position", posAttr);
+    v.points = new THREE.Points(g, new THREE.PointsMaterial({ size: 0.014, vertexColors: true, sizeAttenuation: true }));
     v.scene.add(v.points);
   }
-  const f = currentFrame();
-  rig.camera.position.set(0, 0.05, 1.8);
-  rig.camera.up.set(0, 1, 0);
-  rig.controls.target.set(0, f.c[1], f.c[2]);
-  rig.controls.update();
+  // Keep the user's viewpoint when stepping through frames of the same split;
+  // reset only when the split (scene/robot) changes.
+  if (rig.lastSplit !== state.split.id) {
+    rig.lastSplit = state.split.id;
+    const f = currentFrame();
+    rig.camera.position.set(0, 0.05, 1.8);
+    rig.camera.up.set(0, 1, 0);
+    rig.controls.target.set(0, f.c[1], f.c[2]);
+    rig.controls.update();
+  }
+  rig.needsRender = true;
 }
 
 function setViewColors(key, colors) {
   const v = rig.views.find((x) => x.el.dataset.view === key);
   v.points.geometry.setAttribute("color", new THREE.BufferAttribute(colors, 3));
-  v.points.geometry.attributes.color.needsUpdate = true;
+  rig.needsRender = true;
 }
 
 /* ---------- 2D pred / error map (points splatted back to source pixels) ---------- */
 
 const W2D = 612, H2D = 512;
-const PAL2D = [];
-for (let i = -1; i < 23; i++) PAL2D[i + 1] = hashColor(i);
-const ERR2D = { correct: [120, 120, 120], wrong: [229, 57, 53], ignored: [0, 0, 0] };
+// Packed ABGR (little-endian RGBA bytes) so each pixel is a single u32 write.
+const px32 = ([r, g, b]) => (0xff000000 | (b << 16) | (g << 8) | r) >>> 0;
+const BG32 = px32([15, 23, 42]);
+const PAL32 = new Uint32Array(24);
+for (let i = -1; i < 23; i++) PAL32[i + 1] = px32(hashColor(i));
+const ERR32 = { correct: px32([120, 120, 120]), wrong: px32([229, 57, 53]), ignored: px32([0, 0, 0]) };
 
 function render2d(canvas, labels, errMode) {
   const ctx = canvas.getContext("2d");
   const img = ctx.createImageData(W2D, H2D);
-  const d = img.data;
-  for (let p = 0; p < W2D * H2D; p++) {
-    d[p * 4] = 15; d[p * 4 + 1] = 23; d[p * 4 + 2] = 42; d[p * 4 + 3] = 255;
-  }
+  const px = new Uint32Array(img.data.buffer);
+  px.fill(BG32);
   const { uv, gt } = state;
   for (let i = 0; i < labels.length; i++) {
     const c = errMode
-      ? (gt[i] < 0 ? ERR2D.ignored : gt[i] === labels[i] ? ERR2D.correct : ERR2D.wrong)
-      : PAL2D[labels[i] + 1];
+      ? (gt[i] < 0 ? ERR32.ignored : gt[i] === labels[i] ? ERR32.correct : ERR32.wrong)
+      : PAL32[labels[i] + 1];
     const u = uv[i * 2], v = uv[i * 2 + 1];
     // 3x3 splat: 120k points cover ~40% of pixels, this fills most gaps
     for (let y = Math.max(v - 1, 0); y <= Math.min(v + 1, H2D - 1); y++) {
       for (let x = Math.max(u - 1, 0); x <= Math.min(u + 1, W2D - 1); x++) {
-        const o = (y * W2D + x) * 4;
-        d[o] = c[0]; d[o + 1] = c[1]; d[o + 2] = c[2];
+        px[y * W2D + x] = c;
       }
     }
   }
@@ -271,10 +283,10 @@ function renderLegend() {
     .join("");
 }
 
-async function updateModelViews() {
-  const token = state.loadToken;
-  const [pa, pb] = await Promise.all([loadPred(state.a), loadPred(state.b)]);
-  if (token !== state.loadToken) return;
+function updateModelViews() {
+  if (!state.preds) return; // first frame still loading
+  const pa = state.preds.get(state.a);
+  const pb = state.preds.get(state.b);
   const make = (p) => (state.mode === "err" ? errorColors(state.gt, p) : semanticColors(p));
   setViewColors("a", make(pa));
   setViewColors("b", make(pb));
@@ -307,7 +319,8 @@ async function showFrame() {
     setGeometry();
     setViewColors("rgb", rgbColors(state.rgb));
     setViewColors("gt", semanticColors(state.gt));
-    await updateModelViews();
+    updateModelViews();
+    prefetchNextFrame();
   } finally {
     if (token === state.loadToken) $("#loading").style.display = "none";
   }
@@ -368,9 +381,9 @@ async function main() {
   $("#sel-frame").addEventListener("change", (e) => { state.frameIdx = Number(e.target.value); showFrame(); });
   $("#prev").addEventListener("click", () => step(-1));
   $("#next").addEventListener("click", () => step(1));
-  $("#sel-a").addEventListener("change", async (e) => { state.a = e.target.value; await updateModelViews(); });
-  $("#sel-b").addEventListener("change", async (e) => { state.b = e.target.value; await updateModelViews(); });
-  $("#sel-mode").addEventListener("change", async (e) => { state.mode = e.target.value; await updateModelViews(); });
+  $("#sel-a").addEventListener("change", (e) => { state.a = e.target.value; updateModelViews(); });
+  $("#sel-b").addEventListener("change", (e) => { state.b = e.target.value; updateModelViews(); });
+  $("#sel-mode").addEventListener("change", (e) => { state.mode = e.target.value; updateModelViews(); });
   $("#lucky").addEventListener("click", feelingLucky);
   document.addEventListener("keydown", (e) => {
     if (e.target.tagName === "SELECT") return;
