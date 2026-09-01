@@ -131,6 +131,9 @@ const rig = { renderer: null, camera: null, controls: null, views: [] };
 function setupViews() {
   const container = $("#views");
   rig.renderer = new THREE.WebGLRenderer({ antialias: false, alpha: true, powerPreference: "high-performance" });
+  // Pass vertex colors through unchanged so 3D views match the 2D reference
+  // images and legend chips exactly (default sRGB conversion brightens them).
+  rig.renderer.outputColorSpace = THREE.LinearSRGBColorSpace;
   rig.renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
   rig.renderer.domElement.className = "views-gl";
   container.prepend(rig.renderer.domElement);
