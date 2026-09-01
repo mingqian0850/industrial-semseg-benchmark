@@ -27,7 +27,6 @@ const state = {
   b: "ditr",
   mode: "pred",
   positions: null, rgb: null, gt: null, uv: null,
-  preds: new Map(),
   loadToken: 0,
 };
 
@@ -121,15 +120,24 @@ async function loadFrameData() {
   state.rgb = new Uint8Array(rgbBuf);
   state.gt = new Int8Array(gtBuf);
   state.uv = new Uint16Array(uvBuf);
-  state.preds.clear();
 }
 
-async function loadPred(model) {
-  if (!state.preds.has(model)) {
-    const buf = await fetchBin(sampleId(), `${model}.bin`);
-    state.preds.set(model, new Int8Array(buf));
+/* Cache keyed by sample AND model so a slow response for a previous frame can
+ * never be mistaken for the current one; caching the promise dedupes inflight
+ * requests. Cleared wholesale once it grows past ~7 MB. */
+const predCache = new Map();
+
+function loadPred(model) {
+  const sample = sampleId();
+  const key = `${sample}/${model}`;
+  if (!predCache.has(key)) {
+    if (predCache.size > 60) predCache.clear();
+    const p = fetchBin(sample, `${model}.bin`)
+      .then((buf) => new Int8Array(buf))
+      .catch((e) => { predCache.delete(key); throw e; });
+    predCache.set(key, p);
   }
-  return state.preds.get(model);
+  return predCache.get(key);
 }
 
 /* ---------- three.js four-view rig ---------- */
