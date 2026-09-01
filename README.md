@@ -20,3 +20,4 @@ python3 -m http.server 8000
 - `index.html` — single-page interactive prediction explorer
 - `js/app.js` — data fetching and three.js four-view point cloud rendering
 - `css/style.css` — styling
+- `tools/` — scripts that generate the Hugging Face data the site consumes
