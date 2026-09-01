@@ -86,10 +86,16 @@ function rgbColors(rgb) {
 
 /* ---------- data loading ---------- */
 
-async function fetchBin(sample, file) {
-  const r = await fetch(`${HF}/media/pc/${sample}/${file}`);
-  if (!r.ok) throw new Error(`${file}: HTTP ${r.status}`);
-  return r.arrayBuffer();
+async function fetchBin(sample, file, retry = 1) {
+  try {
+    const r = await fetch(`${HF}/media/pc/${sample}/${file}`);
+    if (!r.ok) throw new Error(`${file}: HTTP ${r.status}`);
+    return await r.arrayBuffer();
+  } catch (e) {
+    if (retry <= 0) throw e;
+    await new Promise((res) => setTimeout(res, 800));
+    return fetchBin(sample, file, retry - 1);
+  }
 }
 
 async function loadFrameData() {
