@@ -238,7 +238,8 @@ async function updateModelViews() {
 }
 
 function updateRef2d() {
-  const sample = sampleId();
+  // Noise variants perturb depth only, so they share the clean frame's 2D images.
+  const sample = sampleId().replace(/_(mild|medium|strong)_noise__/, "__");
   $("#img2d-rgb").src = `${HF}/media/pc/${sample}/rgb2d.webp`;
   $("#img2d-gt").src = `${HF}/media/pc/${sample}/gt2d.webp`;
 }
