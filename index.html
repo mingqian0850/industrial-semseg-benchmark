@@ -23,13 +23,21 @@
 <main class="viewer-page">
   <header class="viewer-header">
     <h1>Industrial<span>3D</span>SemSeg <em>Prediction Explorer</em></h1>
-    <p>Compare 3D semantic segmentation models on synthetic industrial test frames.
-    Drag to rotate, scroll to zoom — all four views stay in sync.</p>
+    <p>Compare 3D semantic segmentation models on all 1,809 synthetic industrial test
+    frames (clean test split and 7 robot hold-out splits). Drag to rotate, scroll to
+    zoom — all four views stay in sync.</p>
   </header>
 
   <div class="viewer-controls">
+    <label>Test split
+      <select id="sel-split"></select>
+    </label>
     <label>Frame
-      <select id="sel-frame"></select>
+      <div class="frame-row">
+        <button class="step" id="prev" type="button" title="Previous frame">‹</button>
+        <select id="sel-frame"></select>
+        <button class="step" id="next" type="button" title="Next frame">›</button>
+      </div>
     </label>
     <label>Model A
       <select id="sel-a"></select>

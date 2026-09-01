@@ -1,4 +1,4 @@
-/* Interactive four-view point cloud comparison.
+/* Interactive four-view point cloud comparison over all test frames.
  * Geometry and labels are fetched as binaries from the public HF dataset repo;
  * the four views share one camera and differ only in per-point colors. */
 
@@ -21,16 +21,20 @@ const MODELS = {
 
 const state = {
   manifest: null,
-  frame: null,
+  split: null,     // split object from manifest
+  frameIdx: 0,     // index within split.frames
   a: "volt",
   b: "ditr",
   mode: "pred",
-  // per-frame data
   positions: null, rgb: null, gt: null,
-  preds: new Map(), // model -> Int8Array (for current frame)
+  preds: new Map(),
+  loadToken: 0,
 };
 
 const $ = (s) => document.querySelector(s);
+
+const currentFrame = () => state.split.frames[state.frameIdx];
+const sampleId = () => `${state.split.dataset}__${currentFrame().f}`;
 
 /* ---------- colors ---------- */
 
@@ -74,32 +78,33 @@ function errorColors(gt, pred) {
 }
 
 function rgbColors(rgb) {
-  const n = rgb.length / 3;
-  const out = new Float32Array(n * 3);
-  for (let i = 0; i < n * 3; i++) out[i] = rgb[i] / 255;
+  const n = rgb.length;
+  const out = new Float32Array(n);
+  for (let i = 0; i < n; i++) out[i] = rgb[i] / 255;
   return out;
 }
 
 /* ---------- data loading ---------- */
 
-async function fetchBin(frame, file) {
-  const r = await fetch(`${HF}/media/pc/${frame}/${file}`);
+async function fetchBin(sample, file) {
+  const r = await fetch(`${HF}/media/pc/${sample}/${file}`);
   if (!r.ok) throw new Error(`${file}: HTTP ${r.status}`);
   return r.arrayBuffer();
 }
 
-async function loadFrame(frameId) {
-  const f = state.manifest.frames.find((x) => x.id === frameId);
+async function loadFrameData() {
+  const f = currentFrame();
+  const sample = sampleId();
   const [coordBuf, rgbBuf, gtBuf] = await Promise.all([
-    fetchBin(frameId, "coord.bin"),
-    fetchBin(frameId, "rgb.bin"),
-    fetchBin(frameId, "gt.bin"),
+    fetchBin(sample, "coord.bin"),
+    fetchBin(sample, "rgb.bin"),
+    fetchBin(sample, "gt.bin"),
   ]);
   const q = new Uint16Array(coordBuf);
   const n = q.length / 3;
   const pos = new Float32Array(n * 3);
-  const [mnx, mny, mnz] = f.bbox_min;
-  const sx = (f.bbox_max[0] - mnx) / 65535, sy = (f.bbox_max[1] - mny) / 65535, sz = (f.bbox_max[2] - mnz) / 65535;
+  const [mnx, mny, mnz, mxx, mxy, mxz] = f.b;
+  const sx = (mxx - mnx) / 65535, sy = (mxy - mny) / 65535, sz = (mxz - mnz) / 65535;
   for (let i = 0; i < n; i++) {
     pos[i * 3] = mnx + q[i * 3] * sx;
     pos[i * 3 + 1] = mny + q[i * 3 + 1] * sy;
@@ -113,7 +118,7 @@ async function loadFrame(frameId) {
 
 async function loadPred(model) {
   if (!state.preds.has(model)) {
-    const buf = await fetchBin(state.frame, `${model}.bin`);
+    const buf = await fetchBin(sampleId(), `${model}.bin`);
     state.preds.set(model, new Int8Array(buf));
   }
   return state.preds.get(model);
@@ -183,10 +188,10 @@ function setGeometry() {
     v.points = new THREE.Points(g, mat());
     v.scene.add(v.points);
   }
-  const f = state.manifest.frames.find((x) => x.id === state.frame);
+  const f = currentFrame();
   rig.camera.position.set(0, 0.05, 1.8);
   rig.camera.up.set(0, 1, 0);
-  rig.controls.target.set(0, f.centroid[1], f.centroid[2]);
+  rig.controls.target.set(0, f.c[1], f.c[2]);
   rig.controls.update();
 }
 
@@ -211,14 +216,15 @@ function renderLegend() {
       chip(m.error_palette.ignored, "ignored");
     return;
   }
-  const f = m.frames.find((x) => x.id === state.frame);
-  $("#legend").innerHTML = f.classes_present
-    .map((c) => chip(m.class_palette[c], c.replaceAll("_", " ")))
+  $("#legend").innerHTML = currentFrame().cls
+    .map((i) => chip(m.class_palette[m.classes[i]], m.classes[i].replaceAll("_", " ")))
     .join("");
 }
 
 async function updateModelViews() {
+  const token = state.loadToken;
   const [pa, pb] = await Promise.all([loadPred(state.a), loadPred(state.b)]);
+  if (token !== state.loadToken) return;
   const make = (p) => (state.mode === "err" ? errorColors(state.gt, p) : semanticColors(p));
   setViewColors("a", make(pa));
   setViewColors("b", make(pb));
@@ -228,24 +234,45 @@ async function updateModelViews() {
   renderLegend();
 }
 
-async function selectFrame(frameId) {
+async function showFrame() {
+  const token = ++state.loadToken;
   $("#loading").style.display = "flex";
-  state.frame = frameId;
-  $("#sel-frame").value = frameId;
-  await loadFrame(frameId);
-  setGeometry();
-  setViewColors("rgb", rgbColors(state.rgb));
-  setViewColors("gt", semanticColors(state.gt));
-  await updateModelViews();
-  $("#loading").style.display = "none";
+  $("#sel-frame").value = String(state.frameIdx);
+  try {
+    await loadFrameData();
+    if (token !== state.loadToken) return;
+    setGeometry();
+    setViewColors("rgb", rgbColors(state.rgb));
+    setViewColors("gt", semanticColors(state.gt));
+    await updateModelViews();
+  } finally {
+    if (token === state.loadToken) $("#loading").style.display = "none";
+  }
+}
+
+function fillFrameSelect() {
+  $("#sel-frame").innerHTML = state.split.frames
+    .map((f, i) => `<option value="${i}">${f.f.replace("frame_", "frame ")}</option>`)
+    .join("");
+}
+
+function setSplit(splitId, frameIdx = 0) {
+  state.split = state.manifest.splits.find((s) => s.id === splitId);
+  state.frameIdx = frameIdx;
+  $("#sel-split").value = splitId;
+  fillFrameSelect();
+  return showFrame();
+}
+
+function step(delta) {
+  const n = state.split.frames.length;
+  state.frameIdx = (state.frameIdx + delta + n) % n;
+  showFrame();
 }
 
 function fillSelects() {
-  const groups = {};
-  state.manifest.frames.forEach((f) => (groups[f.group] ??= []).push(f));
-  $("#sel-frame").innerHTML = Object.entries(groups)
-    .map(([g, fs]) =>
-      `<optgroup label="${g}">${fs.map((f) => `<option value="${f.id}">${f.label}</option>`).join("")}</optgroup>`)
+  $("#sel-split").innerHTML = state.manifest.splits
+    .map((s) => `<option value="${s.id}">${s.label} (${s.frames.length})</option>`)
     .join("");
   const opts = (cur) => Object.entries(MODELS)
     .map(([k, n]) => `<option value="${k}" ${k === cur ? "selected" : ""}>${n}</option>`)
@@ -255,16 +282,17 @@ function fillSelects() {
 }
 
 function feelingLucky() {
-  const frames = state.manifest.frames;
+  const splits = state.manifest.splits;
+  const sp = splits[Math.floor(Math.random() * splits.length)];
+  const idx = Math.floor(Math.random() * sp.frames.length);
   const keys = Object.keys(MODELS);
-  const frame = frames[Math.floor(Math.random() * frames.length)].id;
   const a = keys[Math.floor(Math.random() * keys.length)];
   let b = a;
   while (b === a) b = keys[Math.floor(Math.random() * keys.length)];
   state.a = a; state.b = b;
   $("#sel-a").value = a;
   $("#sel-b").value = b;
-  selectFrame(frame);
+  setSplit(sp.id, idx);
 }
 
 async function main() {
@@ -273,13 +301,21 @@ async function main() {
   fillSelects();
   setupViews();
 
-  $("#sel-frame").addEventListener("change", (e) => selectFrame(e.target.value));
+  $("#sel-split").addEventListener("change", (e) => setSplit(e.target.value));
+  $("#sel-frame").addEventListener("change", (e) => { state.frameIdx = Number(e.target.value); showFrame(); });
+  $("#prev").addEventListener("click", () => step(-1));
+  $("#next").addEventListener("click", () => step(1));
   $("#sel-a").addEventListener("change", async (e) => { state.a = e.target.value; await updateModelViews(); });
   $("#sel-b").addEventListener("change", async (e) => { state.b = e.target.value; await updateModelViews(); });
   $("#sel-mode").addEventListener("change", async (e) => { state.mode = e.target.value; await updateModelViews(); });
   $("#lucky").addEventListener("click", feelingLucky);
+  document.addEventListener("keydown", (e) => {
+    if (e.target.tagName === "SELECT") return;
+    if (e.key === "ArrowLeft") step(-1);
+    if (e.key === "ArrowRight") step(1);
+  });
 
-  await selectFrame(state.manifest.frames[0].id);
+  await setSplit(state.manifest.splits[0].id);
 }
 
 main().catch((err) => {

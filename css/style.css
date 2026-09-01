@@ -77,6 +77,21 @@ a:hover { text-decoration: underline; }
   box-shadow: var(--shadow);
   width: 100%;
 }
+.frame-row { display: flex; gap: 6px; align-items: stretch; }
+.frame-row select { flex: 1; }
+.step {
+  flex: 0 0 38px;
+  border: 1px solid var(--line);
+  background: var(--surface);
+  color: var(--ink-2);
+  border-radius: 10px;
+  font-size: 20px;
+  line-height: 1;
+  cursor: pointer;
+  box-shadow: var(--shadow);
+}
+.step:hover { color: var(--ink); }
+
 .btn-lucky {
   flex: 0 0 auto;
   border: 1px solid var(--line);
