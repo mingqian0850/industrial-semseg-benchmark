@@ -1,0 +1,187 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Industrial 3D Semantic Segmentation Benchmark</title>
+<meta name="description" content="Benchmark of nine 3D semantic segmentation models on a synthetic industrial RGB-D dataset generated with NVIDIA Isaac Sim.">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&family=JetBrains+Mono:wght@400;600&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="css/style.css">
+<script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.4/dist/chart.umd.min.js"></script>
+</head>
+<body>
+
+<nav class="nav">
+  <div class="nav-inner">
+    <a class="brand" href="#top">Industrial<span>3D</span>SemSeg</a>
+    <div class="nav-links">
+      <a href="#leaderboard">Leaderboard</a>
+      <a href="#robustness">Robustness</a>
+      <a href="#cross-robot">Cross-Robot</a>
+      <a href="#efficiency">Efficiency</a>
+      <a href="#dataset">Dataset</a>
+      <a href="#downloads">Downloads</a>
+    </div>
+  </div>
+</nav>
+
+<header class="hero" id="top">
+  <div class="container">
+    <p class="hero-kicker">Synthetic-data benchmark &middot; NVIDIA Isaac Sim</p>
+    <h1>Industrial 3D Semantic<br>Segmentation Benchmark</h1>
+    <p class="hero-sub">
+      Nine point-cloud segmentation models evaluated on a synthetic industrial RGB-D
+      dataset: clean-test accuracy, robustness to controlled depth corruption, and
+      generalization to unseen robot models.
+    </p>
+    <div class="hero-stats" id="hero-stats">
+      <div class="stat"><b>9</b><span>models</span></div>
+      <div class="stat"><b>23</b><span>classes (17-class eval scope)</span></div>
+      <div class="stat"><b>4,041</b><span>single-view frames</span></div>
+      <div class="stat"><b>7</b><span>robot models</span></div>
+    </div>
+    <div class="hero-actions">
+      <a class="btn btn-primary" href="#leaderboard">View results</a>
+      <a class="btn btn-ghost" href="#downloads">Get the data</a>
+    </div>
+  </div>
+</header>
+
+<main class="container">
+
+  <section id="leaderboard" class="section">
+    <h2>Leaderboard <span class="tag">clean test &middot; 1,012 frames</span></h2>
+    <p class="section-note">
+      Dataset-level mIoU over the fixed 17-class evaluation scope. Absent classes count
+      as IoU&nbsp;0. Click a row to expand per-class IoU across all 23 annotated classes.
+    </p>
+    <div class="card table-wrap">
+      <table id="lb-table">
+        <thead>
+          <tr><th>#</th><th>Model</th><th class="num">mIoU-17</th><th class="num">mIoU-23</th><th class="num">mAcc</th><th class="num">allAcc</th><th></th></tr>
+        </thead>
+        <tbody></tbody>
+      </table>
+    </div>
+  </section>
+
+  <section id="robustness" class="section">
+    <h2>Depth-Corruption Robustness <span class="tag">paired test sets</span></h2>
+    <p class="section-note">
+      Frame-averaged 17-class mIoU on four paired test sets (clean / mild / medium /
+      strong depth corruption). All models were trained without added corruption.
+    </p>
+    <div class="grid-2">
+      <div class="card chart-card"><canvas id="noise-chart"></canvas></div>
+      <div class="card chart-card"><canvas id="mix-chart"></canvas>
+        <p class="chart-caption">Training PTv3 on a 40/30/30 clean-mild-medium mix trades a small amount of clean accuracy for far better robustness.</p>
+      </div>
+    </div>
+    <h3>What the corruption looks like</h3>
+    <div class="noise-gallery" id="noise-gallery"></div>
+  </section>
+
+  <section id="cross-robot" class="section">
+    <h2>Unseen-Robot Generalization <span class="tag">hold-out robots</span></h2>
+    <p class="section-note">
+      Models trained with six robot models in the scenes are evaluated on test sets
+      containing one robot each. UR30/UR10/TM12/Panda/NEX10 resemble the training
+      distribution; the KUKA KR210 L150 heavy-payload arm is the hardest transfer target.
+      Toggle between overall 17-class mIoU and IoU of the robot class alone.
+    </p>
+    <div class="toolbar">
+      <div class="seg" id="cr-metric">
+        <button class="active" data-metric="miou17">17-class mIoU</button>
+        <button data-metric="robot_iou">Robot-class IoU</button>
+      </div>
+    </div>
+    <div class="card table-wrap">
+      <table id="cr-table"><thead></thead><tbody></tbody></table>
+    </div>
+
+    <h3>Qualitative comparison on the KUKA hold-out</h3>
+    <p class="section-note">
+      Predictions and error maps for the strongest models on a KUKA KR210 L150 frame.
+      In error maps, gray = correct, red = misclassified, black = ignored.
+    </p>
+    <div class="toolbar">
+      <div class="seg" id="q-view">
+        <button class="active" data-view="full_view">Full scene</button>
+        <button data-view="robot_crop">Robot crop</button>
+      </div>
+    </div>
+    <div class="qual-grid" id="qual-grid"></div>
+    <div class="legend-row">
+      <img id="legend-img" alt="legend" loading="lazy">
+    </div>
+  </section>
+
+  <section id="efficiency" class="section">
+    <h2>Inference Cost <span class="tag">NVIDIA A40 &middot; 200 frames</span></h2>
+    <p class="section-note">
+      Pure model forward-pass latency (batch size 1, no test-time augmentation) and
+      peak GPU memory allocated by PyTorch, on a fixed subset of 200 clean test frames.
+    </p>
+    <div class="grid-2">
+      <div class="card chart-card"><canvas id="eff-chart"></canvas>
+        <p class="chart-caption">Accuracy vs. latency. Bubble size &prop; peak inference VRAM.</p>
+      </div>
+      <div class="card table-wrap">
+        <table id="eff-table">
+          <thead><tr><th>Model</th><th class="num">Latency (ms)</th><th class="num">p90 (ms)</th><th class="num">Peak VRAM (GiB)</th></tr></thead>
+          <tbody></tbody>
+        </table>
+      </div>
+    </div>
+  </section>
+
+  <section id="dataset" class="section">
+    <h2>Dataset</h2>
+    <p class="section-note">
+      Scenes are assembled in NVIDIA Isaac Sim from an industrial asset library
+      (racks, conveyors, CNC machines, pallets, robots, &hellip;), sampled with
+      scene-level and object-centric camera strategies, and rendered to RGB, depth,
+      surface normals, and semantic ground truth. Single-view point clouds are
+      back-projected from depth in the camera frame (120k points per frame).
+    </p>
+    <h3>Per-frame modalities</h3>
+    <div class="modality-gallery" id="modality-gallery"></div>
+    <h3>Camera sampling</h3>
+    <div class="sampling-gallery" id="sampling-gallery"></div>
+  </section>
+
+  <section id="downloads" class="section">
+    <h2>Downloads</h2>
+    <div class="dl-grid">
+      <div class="card dl-card">
+        <h3>Web display assets</h3>
+        <p>Metrics JSON and preview media backing this site.</p>
+        <a class="btn btn-primary" href="https://huggingface.co/datasets/min99ian/industrial-semseg-web" target="_blank" rel="noopener">Hugging Face ↗</a>
+      </div>
+      <div class="card dl-card">
+        <h3>Datasets</h3>
+        <p>Raw RGB-D frames and the converted PTv3 / DiTR training sets (tar.zst shards).</p>
+        <span class="badge-soon">upload in progress</span>
+      </div>
+      <div class="card dl-card">
+        <h3>Model checkpoints</h3>
+        <p>Best checkpoints, training configs, and logs for all nine evaluation entries.</p>
+        <span class="badge-soon">upload in progress</span>
+      </div>
+    </div>
+  </section>
+
+</main>
+
+<footer class="footer">
+  <div class="container">
+    <p>Master's thesis project &middot; Technical University of Munich.
+    Data hosted on <a href="https://huggingface.co/min99ian" target="_blank" rel="noopener">Hugging Face</a>.</p>
+  </div>
+</footer>
+
+<script src="js/app.js"></script>
+</body>
+</html>
