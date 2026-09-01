@@ -3,134 +3,66 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>Industrial 3D Semantic Segmentation Dataset</title>
-<meta name="description" content="Synthetic industrial RGB-D dataset for 3D semantic segmentation, generated with NVIDIA Isaac Sim, with an interactive prediction viewer.">
+<title>Industrial 3D Semantic Segmentation — Prediction Explorer</title>
+<meta name="description" content="Interactive point cloud viewer comparing 3D semantic segmentation model predictions on a synthetic industrial dataset.">
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&family=JetBrains+Mono:wght@400;600&display=swap" rel="stylesheet">
 <link rel="stylesheet" href="css/style.css">
+<script type="importmap">
+{
+  "imports": {
+    "three": "https://cdn.jsdelivr.net/npm/three@0.169.0/build/three.module.js",
+    "three/addons/": "https://cdn.jsdelivr.net/npm/three@0.169.0/examples/jsm/"
+  }
+}
+</script>
 </head>
 <body>
 
-<nav class="nav">
-  <div class="nav-inner">
-    <a class="brand" href="#top">Industrial<span>3D</span>SemSeg</a>
-    <div class="nav-links">
-      <a href="#dataset">Dataset</a>
-      <a href="#explore">Explore</a>
-      <a href="#downloads">Downloads</a>
-    </div>
+<main class="viewer-page">
+  <header class="viewer-header">
+    <h1>Industrial<span>3D</span>SemSeg <em>Prediction Explorer</em></h1>
+    <p>Compare 3D semantic segmentation models on synthetic industrial test frames.
+    Drag to rotate, scroll to zoom — all four views stay in sync.</p>
+  </header>
+
+  <div class="viewer-controls">
+    <label>Frame
+      <select id="sel-frame"></select>
+    </label>
+    <label>Model A
+      <select id="sel-a"></select>
+    </label>
+    <label>Model B
+      <select id="sel-b"></select>
+    </label>
+    <label>Display
+      <select id="sel-mode">
+        <option value="pred">RGB / GT / Prediction</option>
+        <option value="err">RGB / GT / Error map</option>
+      </select>
+    </label>
+    <button class="btn-lucky" id="lucky" type="button">🎲 Feeling lucky</button>
   </div>
-</nav>
 
-<header class="hero" id="top">
-  <div class="container">
-    <p class="hero-kicker">Synthetic dataset &middot; NVIDIA Isaac Sim</p>
-    <h1>Industrial 3D Semantic<br>Segmentation Dataset</h1>
-    <p class="hero-sub">
-      A synthetic industrial RGB-D dataset for 3D semantic segmentation: multi-scene
-      warehouse and production environments with per-point labels, paired
-      depth-corruption test sets, and robot hold-out splits. Explore model predictions
-      on sample frames below.
-    </p>
-    <div class="hero-stats" id="hero-stats">
-      <div class="stat"><b>4,041</b><span>single-view frames</span></div>
-      <div class="stat"><b>23</b><span>annotated classes</span></div>
-      <div class="stat"><b>7</b><span>robot models</span></div>
-      <div class="stat"><b>4</b><span>depth-corruption levels</span></div>
-    </div>
-    <div class="hero-actions">
-      <a class="btn btn-primary" href="#explore">Explore predictions</a>
-      <a class="btn btn-ghost" href="#downloads">Get the data</a>
-    </div>
+  <div class="views" id="views">
+    <div class="view"><div class="view-canvas" data-view="rgb"></div><div class="view-label">Input (RGB)</div></div>
+    <div class="view"><div class="view-canvas" data-view="gt"></div><div class="view-label">Ground truth</div></div>
+    <div class="view"><div class="view-canvas" data-view="a"></div><div class="view-label" id="label-a"></div></div>
+    <div class="view"><div class="view-canvas" data-view="b"></div><div class="view-label" id="label-b"></div></div>
+    <div class="views-loading" id="loading">Loading point cloud…</div>
   </div>
-</header>
 
-<main class="container">
+  <div class="explore-legend" id="legend"></div>
 
-  <section id="dataset" class="section">
-    <h2>Dataset</h2>
-    <p class="section-note">
-      Scenes are assembled in NVIDIA Isaac Sim from an industrial asset library
-      (racks, conveyors, CNC machines, pallets, robots, &hellip;), sampled with
-      scene-level and object-centric camera strategies, and rendered to RGB, depth,
-      surface normals, and semantic ground truth. Single-view point clouds are
-      back-projected from depth in the camera frame (120k points per frame).
-    </p>
-    <h3>Per-frame modalities</h3>
-    <div class="modality-gallery" id="modality-gallery"></div>
-    <h3>Camera sampling</h3>
-    <div class="sampling-gallery" id="sampling-gallery"></div>
-    <h3>Depth-corruption test sets</h3>
-    <p class="section-note">
-      Three corrupted variants of the test split (mild / medium / strong) model
-      increasing depth-sensor noise on top of the clean renders; surface normals are
-      re-estimated from the corrupted depth.
-    </p>
-    <div class="noise-gallery" id="noise-gallery"></div>
-  </section>
-
-  <section id="explore" class="section">
-    <h2>Explore Predictions <span class="tag">sample frames &middot; 9 models</span></h2>
-    <p class="section-note">
-      Pick a frame on the left, choose any two models to compare, and switch between
-      semantic predictions and error maps (gray = correct, red = misclassified,
-      black = ignored). All panels share a locked camera per frame. Frames come from
-      the clean test split and the KUKA robot hold-out split.
-    </p>
-    <div class="explore card">
-      <aside class="frame-list" id="frame-list"></aside>
-      <div class="explore-main">
-        <div class="explore-controls">
-          <label>Model A
-            <select id="model-a"></select>
-          </label>
-          <label>Model B
-            <select id="model-b"></select>
-          </label>
-          <div class="seg" id="ex-mode">
-            <button class="active" data-mode="pred">Prediction</button>
-            <button data-mode="err">Error map</button>
-          </div>
-          <button class="btn btn-lucky" id="lucky" type="button">🎲 Feeling lucky</button>
-        </div>
-        <div class="panel-grid" id="panel-grid"></div>
-        <div class="explore-legend" id="explore-legend"></div>
-      </div>
-    </div>
-  </section>
-
-  <section id="downloads" class="section">
-    <h2>Downloads</h2>
-    <div class="dl-grid">
-      <div class="card dl-card">
-        <h3>Web display assets</h3>
-        <p>Preview media backing this site (sample-frame renders and dataset illustrations).</p>
-        <a class="btn btn-primary" href="https://huggingface.co/datasets/min99ian/industrial-semseg-web" target="_blank" rel="noopener">Hugging Face ↗</a>
-      </div>
-      <div class="card dl-card">
-        <h3>Datasets</h3>
-        <p>Raw RGB-D frames and the converted point-cloud training sets (tar.zst shards).</p>
-        <span class="badge-soon">upload in progress</span>
-      </div>
-      <div class="card dl-card">
-        <h3>Model checkpoints</h3>
-        <p>Best checkpoints, training configs, and logs for the evaluated models.</p>
-        <span class="badge-soon">upload in progress</span>
-      </div>
-    </div>
-  </section>
-
+  <footer class="viewer-footer">
+    Synthetic industrial RGB-D dataset generated with NVIDIA Isaac Sim · point clouds
+    of 120k points per frame · data served from
+    <a href="https://huggingface.co/datasets/min99ian/industrial-semseg-web" target="_blank" rel="noopener">Hugging Face</a>
+  </footer>
 </main>
 
-<footer class="footer">
-  <div class="container">
-    <p>Master's thesis project &middot; Technical University of Munich.
-    Data hosted on <a href="https://huggingface.co/min99ian" target="_blank" rel="noopener">Hugging Face</a>.
-    Quantitative benchmark results will be published together with the thesis.</p>
-  </div>
-</footer>
-
-<script src="js/app.js"></script>
+<script type="module" src="js/app.js"></script>
 </body>
 </html>
