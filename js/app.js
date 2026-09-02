@@ -144,7 +144,13 @@ function prefetchNextFrame() {
 
 /* ---------- three.js four-view rig ---------- */
 
-const rig = { renderer: null, camera: null, controls: null, views: [], needsRender: true, lastSplit: null };
+const FULL_PR = Math.min(window.devicePixelRatio, 2);
+
+const rig = {
+  renderer: null, camera: null, controls: null, views: [],
+  needsRender: true, lastSplit: null,
+  w: 0, h: 0, pr: FULL_PR, lastInteract: 0,
+};
 
 function setupViews() {
   const container = $("#views");
@@ -152,7 +158,7 @@ function setupViews() {
   // Pass vertex colors through unchanged so 3D views match the 2D reference
   // images and legend chips exactly (default sRGB conversion brightens them).
   rig.renderer.outputColorSpace = THREE.LinearSRGBColorSpace;
-  rig.renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
+  rig.renderer.setPixelRatio(rig.pr);
   rig.renderer.domElement.className = "views-gl";
   container.prepend(rig.renderer.domElement);
 
@@ -161,42 +167,76 @@ function setupViews() {
   rig.controls.enableDamping = true;
   rig.controls.dampingFactor = 0.08;
   rig.controls.rotateSpeed = 0.6;
+  rig.controls.addEventListener("change", () => {
+    rig.lastInteract = performance.now();
+    rig.needsRender = true;
+  });
 
   for (const el of container.querySelectorAll(".view-canvas")) {
     const scene = new THREE.Scene();
     scene.background = new THREE.Color(0x0f172a);
-    rig.views.push({ el, scene, points: null });
+    rig.views.push({ el, scene, points: null, rect: null });
   }
 
+  // Layout queries are cached here; the render loop never touches layout.
   const resize = () => {
-    const r = container.getBoundingClientRect();
-    rig.renderer.setSize(r.width, r.height);
+    const cr = container.getBoundingClientRect();
+    rig.w = cr.width; rig.h = cr.height;
+    rig.renderer.setSize(rig.w, rig.h);
+    for (const v of rig.views) {
+      const r = v.el.getBoundingClientRect();
+      v.rect = {
+        left: r.left - cr.left,
+        bottom: cr.height - (r.top - cr.top) - r.height,
+        w: r.width, h: r.height,
+      };
+    }
     rig.needsRender = true;
   };
   new ResizeObserver(resize).observe(container);
   resize();
 
-  // Render only when the camera moved or data changed; an idle page costs no GPU.
+  // Render only when the camera moved or data changed; an idle page costs no
+  // GPU. While interacting, drop to 1x pixel ratio (4x less fill on hidpi) and
+  // restore full resolution 250 ms after the last camera change.
   rig.renderer.setAnimationLoop(() => {
     const moved = rig.controls.update();
+    const interacting = performance.now() - rig.lastInteract < 250;
+    const targetPR = interacting ? 1 : FULL_PR;
+    if (targetPR !== rig.pr) {
+      rig.pr = targetPR;
+      rig.renderer.setPixelRatio(targetPR);
+      rig.renderer.setSize(rig.w, rig.h, false);
+      rig.needsRender = true;
+    }
     if (!moved && !rig.needsRender) return;
     rig.needsRender = false;
-    const crect = container.getBoundingClientRect();
     rig.renderer.setScissorTest(false);
     rig.renderer.setClearColor(0x000000, 0);
     rig.renderer.clear();
     rig.renderer.setScissorTest(true);
     for (const v of rig.views) {
-      const r = v.el.getBoundingClientRect();
-      const left = r.left - crect.left, top = r.top - crect.top;
-      const bottom = crect.height - top - r.height;
-      rig.renderer.setViewport(left, bottom, r.width, r.height);
-      rig.renderer.setScissor(left, bottom, r.width, r.height);
-      rig.camera.aspect = r.width / r.height;
+      const { left, bottom, w, h } = v.rect;
+      rig.renderer.setViewport(left, bottom, w, h);
+      rig.renderer.setScissor(left, bottom, w, h);
+      rig.camera.aspect = w / h;
       rig.camera.updateProjectionMatrix();
       rig.renderer.render(v.scene, rig.camera);
     }
   });
+}
+
+function makePointsMaterial() {
+  const m = new THREE.PointsMaterial({ size: 0.014, vertexColors: true, sizeAttenuation: true });
+  // Cap the on-screen point size: when zoomed in close, unbounded attenuated
+  // points blow up fill rate (120k points x 4 views) and zooming stutters.
+  m.onBeforeCompile = (shader) => {
+    shader.vertexShader = shader.vertexShader.replace(
+      "if ( isPerspective ) gl_PointSize *= ( scale / - mvPosition.z );",
+      "if ( isPerspective ) gl_PointSize = min( gl_PointSize * ( scale / - mvPosition.z ), 16.0 );",
+    );
+  };
+  return m;
 }
 
 function setGeometry() {
@@ -210,7 +250,7 @@ function setGeometry() {
     }
     const g = new THREE.BufferGeometry();
     g.setAttribute("position", posAttr);
-    v.points = new THREE.Points(g, new THREE.PointsMaterial({ size: 0.014, vertexColors: true, sizeAttenuation: true }));
+    v.points = new THREE.Points(g, makePointsMaterial());
     v.scene.add(v.points);
   }
   // Keep the user's viewpoint when stepping through frames of the same split;
