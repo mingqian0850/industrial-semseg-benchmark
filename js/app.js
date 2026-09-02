@@ -145,20 +145,48 @@ function prefetchNextFrame() {
 /* ---------- three.js four-view rig ---------- */
 
 const FULL_PR = Math.min(window.devicePixelRatio, 2);
+const LOD_POINTS = 40000; // points drawn per view while the camera is moving
+
+/* One static shuffled index buffer per point count: with it, drawRange(0, k)
+ * renders a uniform random k-subset — free level-of-detail during interaction. */
+const shuffleCache = new Map();
+function shuffledIndices(n) {
+  if (!shuffleCache.has(n)) {
+    const idx = new Uint32Array(n);
+    for (let i = 0; i < n; i++) idx[i] = i;
+    let s = 88172645463325252n; // xorshift64, deterministic
+    for (let i = n - 1; i > 0; i--) {
+      s ^= s << 13n; s &= 0xffffffffffffffffn; s ^= s >> 7n; s ^= s << 17n; s &= 0xffffffffffffffffn;
+      const j = Number(s % BigInt(i + 1));
+      const t = idx[i]; idx[i] = idx[j]; idx[j] = t;
+    }
+    shuffleCache.set(n, idx);
+  }
+  return shuffleCache.get(n);
+}
 
 const rig = {
   renderer: null, camera: null, controls: null, views: [],
   needsRender: true, lastSplit: null,
-  w: 0, h: 0, pr: FULL_PR, lastInteract: 0,
+  w: 0, h: 0, lastInteract: 0, lod: false,
 };
+
+function applyLod() {
+  for (const v of rig.views) {
+    if (!v.points) continue;
+    const n = v.points.geometry.index.count;
+    v.points.geometry.setDrawRange(0, rig.lod ? Math.min(LOD_POINTS, n) : n);
+  }
+  rig.needsRender = true;
+}
 
 function setupViews() {
   const container = $("#views");
-  rig.renderer = new THREE.WebGLRenderer({ antialias: false, alpha: true, powerPreference: "high-performance" });
+  rig.renderer = new THREE.WebGLRenderer({ antialias: false, alpha: false, powerPreference: "high-performance" });
   // Pass vertex colors through unchanged so 3D views match the 2D reference
   // images and legend chips exactly (default sRGB conversion brightens them).
   rig.renderer.outputColorSpace = THREE.LinearSRGBColorSpace;
-  rig.renderer.setPixelRatio(rig.pr);
+  rig.renderer.setPixelRatio(FULL_PR);
   rig.renderer.domElement.className = "views-gl";
   container.prepend(rig.renderer.domElement);
 
@@ -197,22 +225,20 @@ function setupViews() {
   resize();
 
   // Render only when the camera moved or data changed; an idle page costs no
-  // GPU. While interacting, drop to 1x pixel ratio (4x less fill on hidpi) and
-  // restore full resolution 250 ms after the last camera change.
+  // GPU. While the camera is moving, draw a uniform third of the points
+  // (shuffled index + drawRange, no buffer churn); the full cloud is restored
+  // one frame after the interaction settles.
   rig.renderer.setAnimationLoop(() => {
     const moved = rig.controls.update();
-    const interacting = performance.now() - rig.lastInteract < 250;
-    const targetPR = interacting ? 1 : FULL_PR;
-    if (targetPR !== rig.pr) {
-      rig.pr = targetPR;
-      rig.renderer.setPixelRatio(targetPR);
-      rig.renderer.setSize(rig.w, rig.h, false);
-      rig.needsRender = true;
+    const interacting = performance.now() - rig.lastInteract < 200;
+    if (interacting !== rig.lod) {
+      rig.lod = interacting;
+      applyLod();
     }
     if (!moved && !rig.needsRender) return;
     rig.needsRender = false;
     rig.renderer.setScissorTest(false);
-    rig.renderer.setClearColor(0x000000, 0);
+    rig.renderer.setClearColor(0xf7f8fb, 1);
     rig.renderer.clear();
     rig.renderer.setScissorTest(true);
     for (const v of rig.views) {
@@ -240,8 +266,9 @@ function makePointsMaterial() {
 }
 
 function setGeometry() {
-  // One position attribute shared by all four views (one GPU buffer).
+  // One position attribute and one shuffled index shared by all four views.
   const posAttr = new THREE.BufferAttribute(state.positions, 3);
+  const idxAttr = new THREE.BufferAttribute(shuffledIndices(state.positions.length / 3), 1);
   for (const v of rig.views) {
     if (v.points) {
       v.scene.remove(v.points);
@@ -250,9 +277,11 @@ function setGeometry() {
     }
     const g = new THREE.BufferGeometry();
     g.setAttribute("position", posAttr);
+    g.setIndex(idxAttr);
     v.points = new THREE.Points(g, makePointsMaterial());
     v.scene.add(v.points);
   }
+  applyLod();
   // Keep the user's viewpoint when stepping through frames of the same split;
   // reset only when the split (scene/robot) changes.
   if (rig.lastSplit !== state.split.id) {
